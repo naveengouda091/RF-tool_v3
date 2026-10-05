@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Radio Environment Map (REM) - Live GPS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://leaflet.github.io/Leaflet.heat/dist/leaflet-heat.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Arial, sans-serif; }
+        #map { width: 100%; height: 100%; }
+        .hud-panel {
+            position: absolute; top: 15px; left: 60px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.95); padding: 12px 16px;
+            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+            font-size: 13px; max-width: 280px;
+        }
+        .hud-btn {
+            background: #1976d2; color: white; border: none; padding: 8px 12px;
+            border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%;
+            margin-top: 8px;
+        }
+        .legend {
+            position: absolute; bottom: 25px; left: 25px; z-index: 1000;
+            background: white; padding: 10px 14px; border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3); font-size: 12px;
+        }
+        .legend-item { display: flex; align-items: center; margin-bottom: 4px; }
+        .dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="hud-panel">
+        <h4 style="margin: 0 0 4px 0; color: #0d47a1;">RF Environmental Mapping</h4>
+        <div>Status: <span id="loc-status" style="font-weight: bold; color: orange;">Locating...</span></div>
+        <div id="coord-display" style="color: #555; font-size: 11px; margin-top: 4px;">Lat: --, Lon: --</div>
+        <button class="hud-btn" onclick="relocate()">Acquire Live GPS Fix</button>
+    </div>
+
+    <div class="legend">
+        <b>RF Exposure Index</b>
+        <div class="legend-item"><div class="dot" style="background: #2e7d32;"></div> Low (&lt; -50 dBFS)</div>
+        <div class="legend-item"><div class="dot" style="background: #ef6c00;"></div> Medium (-50 to -30 dBFS)</div>
+        <div class="legend-item"><div class="dot" style="background: #c62828;"></div> High (&gt; -30 dBFS)</div>
+    </div>
+
+    <script>
+        const measurements = [{'band': 'FM Broadcast', 'freq': 98.3, 'peak': -9.653579395190823, 'avg': -41.00081081701255, 'exp': 'MEDIUM', 'shield': 'No_Antenna_Rods'}, {'band': 'FM Broadcast', 'freq': 98.3, 'peak': -9.580865171560372, 'avg': -40.94899839399723, 'exp': 'MEDIUM', 'shield': 'Aluminium_Foil'}, {'band': 'FM Broadcast', 'freq': 98.3, 'peak': -9.268870554075034, 'avg': -40.6900857724209, 'exp': 'MEDIUM', 'shield': 'None'}, {'band': 'FM Broadcast', 'freq': 98.3, 'peak': -9.924885764647899, 'avg': -40.639005004017264, 'exp': 'MEDIUM', 'shield': 'None'}, {'band': 'FM Broadcast', 'freq': 98.3, 'peak': -7.209937805454838, 'avg': -32.26952348728349, 'exp': 'MEDIUM', 'shield': 'None'}];
+        
+        // Initialize Leaflet Map
+        const streetLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri Street'
+        });
+        const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri Satellite'
+        });
+
+        const map = L.map('map', {
+            center: [15.3218, 74.7646],
+            zoom: 17,
+            layers: [satLayer]
+        });
+
+        L.control.layers({"Satellite": satLayer, "Street": streetLayer}).addTo(map);
+
+        let heatLayer = null;
+        let markers = [];
+
+        function renderPoints(lat, lon) {
+            // Clean previous
+            markers.forEach(m => map.removeLayer(m));
+            if (heatLayer) map.removeLayer(heatLayer);
+            markers = [];
+
+            let heatData = [];
+
+            measurements.forEach((m, idx) => {
+                // Disperse points slightly around measurement area for visualization
+                let dLat = (idx === 0) ? 0 : (Math.cos(idx) * 0.0003);
+                let dLon = (idx === 0) ? 0 : (Math.sin(idx) * 0.0003);
+                let pLat = lat + dLat;
+                let pLon = lon + dLon;
+
+                let weight = Math.max(0.1, Math.min(1.0, (m.avg + 80.0) / 60.0));
+                heatData.push([pLat, pLon, weight]);
+
+                let color = m.exp === "LOW" ? "#2e7d32" : (m.exp === "MEDIUM" ? "#ef6c00" : "#c62828");
+
+                let marker = L.circleMarker([pLat, pLon], {
+                    radius: 8,
+                    color: '#ffffff',
+                    weight: 2,
+                    fillColor: color,
+                    fillOpacity: 0.9
+                }).bindPopup(`
+                    <b>Band:</b> ${m.band}<br>
+                    <b>Freq:</b> ${m.freq} MHz<br>
+                    <b>Peak:</b> ${m.peak.toFixed(1)} dBFS<br>
+                    <b>Channel:</b> ${m.avg.toFixed(1)} dBFS<br>
+                    <b>Exposure:</b> <span style="color:${color}; font-weight:bold;">${m.exp}</span><br>
+                    <b>Shield:</b> ${m.shield}
+                `).addTo(map);
+
+                markers.push(marker);
+            });
+
+            heatLayer = L.heatLayer(heatData, {radius: 35, blur: 20, maxZoom: 18, minOpacity: 0.4}).addTo(map);
+            map.setView([lat, lon], 17);
+        }
+
+        function relocate() {
+            const status = document.getElementById('loc-status');
+            const coords = document.getElementById('coord-display');
+            status.innerText = "Requesting device GPS...";
+            status.style.color = "orange";
+
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        const lat = pos.coords.latitude;
+                        const lon = pos.coords.longitude;
+                        status.innerText = "GPS Locked";
+                        status.style.color = "green";
+                        coords.innerText = `Lat: ${lat.toFixed(5)}, Lon: ${lon.toFixed(5)}`;
+                        renderPoints(lat, lon);
+                    },
+                    (err) => {
+                        status.innerText = "Using Fallback (VDIT)";
+                        status.style.color = "red";
+                        coords.innerText = "Lat: 15.3218, Lon: 74.7646";
+                        renderPoints(15.3218, 74.7646);
+                    },
+                    { enableHighAccuracy: true, timeout: 8000 }
+                );
+            } else {
+                renderPoints(15.3218, 74.7646);
+            }
+        }
+
+        // Initial acquisition
+        relocate();
+    </script>
+</body>
+</html>
