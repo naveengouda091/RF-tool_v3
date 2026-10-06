@@ -1,4 +1,5 @@
 import sys
+import time
 import numpy as np
 from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
@@ -12,16 +13,17 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
 
         self.sdr = None
         self.is_running = False
-        self.fs = 2.4e6
-        self.fft_size = 2048
+        self.fs = 2.048e6          # Safe, stable USB sample rate for RTL-SDR Blog V3
+        self.chunk_size = 16384    # Safe hardware transfer block (multiples of 512)
+        self.fft_size = 2048       # Visual FFT resolution
         self.history_depth = 220
         self.window = np.blackman(self.fft_size)
         self.window_power = np.sum(self.window)
 
-        # Traces & Buffers
+        # Buffers
         self.max_hold_trace = np.full(self.fft_size, -120.0)
         self.waterfall_data = np.full((self.history_depth, self.fft_size), -90.0)
-        self.cal_offset_db = 15.0  # Empirical offset to estimate dBm from dBFS
+        self.cal_offset_db = 15.0
 
         self.setup_ui()
 
@@ -95,7 +97,7 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
         plot_layout = QtWidgets.QVBoxLayout()
         main_layout.addLayout(plot_layout, stretch=4)
 
-        # Spectrum Plot with Live + Max-Hold Traces
+        # Spectrum Plot
         self.spectrum_plot = pg.PlotWidget(title="Power Spectral Density (Cyan: Instantaneous | Yellow: Max-Hold)")
         self.spectrum_plot.setLabel('left', "Power", units="dBFS")
         self.spectrum_plot.setLabel('bottom', "Frequency", units="MHz")
@@ -126,16 +128,23 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
     def change_preset(self, idx):
         presets = [98.3, 942.5, 433.92, 125.0]
         self.freq_spin.setValue(presets[idx])
-        self.reset_max_hold()
 
     def update_freq(self, val):
         if self.sdr:
-            self.sdr.center_freq = val * 1e6
+            try:
+                self.sdr.center_freq = val * 1e6
+                time.sleep(0.01)
+                _ = self.sdr.read_samples(4096)
+            except Exception:
+                pass
         self.reset_max_hold()
 
     def update_gain(self, val):
         if self.sdr:
-            self.sdr.gain = float(val)
+            try:
+                self.sdr.gain = float(val)
+            except Exception:
+                pass
 
     def toggle_stream(self):
         if not self.is_running:
@@ -145,19 +154,24 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
                 self.sdr.center_freq = self.freq_spin.value() * 1e6
                 self.sdr.gain = float(self.slider_gain.value())
                 self.sdr.direct_sampling = 0
-                _ = self.sdr.read_samples(4096)
+
+                time.sleep(0.02)
+                _ = self.sdr.read_samples(8192)
 
                 self.reset_max_hold()
                 self.is_running = True
                 self.btn_run.setText("Stop Acquisition")
                 self.btn_run.setStyleSheet("background-color: #c62828; color: white; font-weight: bold; padding: 9px;")
-                self.timer.start(30)
+                self.timer.start(40)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Hardware Error", f"Unable to open SDR:\n{e}")
         else:
             self.timer.stop()
             if self.sdr:
-                self.sdr.close()
+                try:
+                    self.sdr.close()
+                except Exception:
+                    pass
                 self.sdr = None
             self.is_running = False
             self.btn_run.setText("Start Live Acquisition")
@@ -167,7 +181,14 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
         if not self.sdr:
             return
 
-        samples = self.sdr.read_samples(self.fft_size)
+        try:
+            # Safe USB block read
+            raw_samples = self.sdr.read_samples(self.chunk_size)
+            samples = raw_samples[:self.fft_size]
+        except Exception:
+            # Guard against occasional USB bus glitch or frame drop
+            return
+
         norm_samples = samples / (np.max(np.abs(samples)) + 1e-9)
         fft_vals = np.fft.fftshift(np.fft.fft(norm_samples * self.window))
         psd_linear = (np.abs(fft_vals) / self.window_power) ** 2
@@ -208,7 +229,10 @@ class EnhancedSpectrumWaterfallApp(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         if self.is_running and self.sdr:
-            self.sdr.close()
+            try:
+                self.sdr.close()
+            except Exception:
+                pass
         event.accept()
 
 if __name__ == "__main__":
